@@ -5,6 +5,8 @@
 ![Status](https://img.shields.io/badge/status-active-brightgreen)
 ![Writeups](https://img.shields.io/badge/writeups-3-blueviolet)
 
+A collection of WordPress plugin vulnerability writeups. Each one covers the vulnerable code, the vendor's fix, and a working reproduction against a lab instance.
+
 ---
 
 ## Table of Contents
