@@ -12,6 +12,7 @@ Reproducible vulnerability research on WordPress plugins. Every entry in this re
 ## Table of Contents
 
 - [Contents](#contents)
+- [Writeups](#writeups)
 - [Repository Structure](#repository-structure)
 - [Research Methodology](#research-methodology)
 - [Evidence Standard](#evidence-standard)
@@ -32,9 +33,84 @@ Reproducible vulnerability research on WordPress plugins. Every entry in this re
 |-----|-----------|-------|------|-----|--------|
 | [CVE-2020-25213](CVE-2020-25213-wp-file-manager/) | WP File Manager < 6.9 | Unauthenticated file upload → RCE | 9.8 Critical | CWE-434 | Complete |
 | [CVE-2026-82970](CVE-2026-82970-wp-cookie-notice/) | WP Cookie Consent ≤ 4.4.1 | Unauthenticated arbitrary file upload | 9.8 Critical | CWE-434 | Complete |
-| [CVE-2026-3891](CVE-2026-3891-pix-for-woocommerce/) | Pix for WooCommerce | Unauthenticated file upload via nonce leak | TBD | CWE-434 | In progress |
+| [CVE-2026-3891](CVE-2026-3891-pix-for-woocommerce/) | Pix for WooCommerce | Unauthenticated file upload via exposed nonce endpoint | TBD | CWE-434 / CWE-862 | Complete |
 
 Each directory is fully self-contained. Reproduction steps for one writeup do not depend on another.
+
+---
+
+## Writeups
+
+### CVE-2020-25213 — WP File Manager Unauthenticated File Upload
+
+**Component:** WP File Manager (plugin slug `wp-file-manager`)
+**Affected versions:** < 6.9
+**Fixed version:** 6.9
+**Class:** Unauthenticated arbitrary file upload leading to remote code execution
+**CVSS v3.1:** 9.8 (Critical) — AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H
+**CWE:** CWE-434 (Unrestricted Upload of File with Dangerous Type)
+
+The plugin bundles the elFinder file manager library and deploys its reference connector script as a directly reachable PHP file inside the plugin directory:
+
+    /wp-content/plugins/wp-file-manager/lib/php/connector.minimal.php
+
+The connector accepts file operations via a `cmd` request parameter. For `cmd=upload`, it writes the multipart body into the configured volume root — which, in vulnerable versions, resolves to a directory inside the plugin itself:
+
+    /wp-content/plugins/wp-file-manager/lib/files/
+
+Because that path sits inside the plugin directory, and WordPress web servers execute PHP in that path by default, an uploaded `.php` file becomes immediately executable. No authentication check runs anywhere in the request. No capability check runs. The connector is reachable by any HTTP client with network access to the site.
+
+The design flaw is that elFinder's connector was written to be embedded behind a host application that performs authorization. The plugin deployed the reference connector directly, without wrapping it in WordPress's permission layer — so the assumption the library was built on was silently removed.
+
+The fix in 6.9 moved the connector behind WordPress context and constrained both the upload destination and the file types accepted.
+
+**What the writeup covers:** the connector's request-routing logic, the default volume configuration that placed uploaded files inside the plugin directory, the specific patch hunks extracted via SVN diff, the exact multipart request that triggers the upload, and the follow-up GET that confirms code execution.
+
+---
+
+### CVE-2026-82970 — WP Cookie Consent Unauthenticated Arbitrary File Upload
+
+**Component:** WP Cookie Consent (plugin slug `gdpr-cookie-consent`)
+**Affected versions:** ≤ 4.4.1
+**Fixed version:** 4.4.2
+**Class:** Unauthenticated arbitrary file upload
+**CVSS v3.1:** 9.8 (Critical) — AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H
+**CWE:** CWE-434 (Unrestricted Upload of File with Dangerous Type)
+
+The plugin's SaaS connector feature exposes a file upload handler intended to receive branding assets — logos and banner images — pushed from the vendor's own dashboard to customer WordPress sites. The handler decodes a base64-encoded request body and writes the result to `wp-content/uploads/` under an attacker-supplied filename.
+
+Nothing in the handler validates the incoming data. The filename is not checked against an extension allowlist. The decoded content is not inspected. The destination path is not sanitized. The intended security boundary — "only the vendor's SaaS service calls this endpoint" — was never actually enforced. The endpoint is reachable from the public internet, and the request it accepts is an ordinary HTTP POST.
+
+The CVSS vector carries a Scope change (S:C) because the vulnerability crosses a privilege boundary: the upload handler runs in the application's security context, but the payload it writes executes in the server's.
+
+The fix in 4.4.2 was not to patch the endpoint but to remove it and rebuild the connector's trust model around JWT ownership binding and HMAC request signing. That response is itself a statement about how severe the vendor judged the issue to be.
+
+**What the writeup covers:** the vulnerable upload handler and its base64 decode path, the difference between the intended trust boundary and the enforced one, the patch's replacement of the endpoint with a signed-and-bound connector, and the specific impact on default WordPress deployments where `wp-content/uploads/` permits PHP execution.
+
+---
+
+### CVE-2026-3891 — Pix for WooCommerce Unauthenticated File Upload via Exposed Nonce Endpoint
+
+**Component:** Pix for WooCommerce (plugin slug `payment-gateway-pix-for-woocommerce`)
+**Affected versions:** TBD
+**Class:** Unauthenticated file upload chained through an exposed nonce-generation endpoint
+**CWE:** CWE-434 (Unrestricted Upload of File with Dangerous Type), CWE-862 (Missing Authorization)
+
+This vulnerability is a two-request chain, and the first request is the interesting part.
+
+The plugin registers an AJAX action named `lkn_pix_for_woocommerce_generate_nonce`. The action accepts an `action_name` parameter and returns a WordPress nonce for whichever action name is supplied. It does not verify that the caller has any capability. It does not check whether the requested nonce is for an action the caller should be allowed to invoke. It hands out a valid nonce for any action name the attacker names, to any unauthenticated request that reaches `admin-ajax.php`.
+
+The second AJAX action, `lkn_pix_for_woocommerce_c6_save_settings`, is the upload handler. It accepts a multipart POST with a file field named `certificate_crt_path`. The file is written to:
+
+    /wp-content/plugins/payment-gateway-pix-for-woocommerce/Includes/files/certs_c6/
+
+No extension allowlist is applied. No MIME validation is performed. The handler trusts the nonce check as the sole gate — which would be fine if the nonce could only be obtained by an authorized user. Because the first action exposes nonce generation to anyone, the second action's nonce check provides no real protection. A valid nonce is trivially obtained, and once it is, the upload succeeds.
+
+The result is unauthenticated remote code execution: an attacker uploads a PHP file, requests it, and PHP executes in the web server's context. The exploit is two POST requests against `admin-ajax.php` with no cookies, no credentials, and no user interaction.
+
+The class of bug is the same as the other two entries in this repository — an endpoint designed around a trust assumption that was never enforced — but the mechanism is different. CVE-2020-25213 exposes the upload handler directly. CVE-2026-82970 exposes it because the intended authentication was never implemented. This one exposes it because the authentication mechanism it relies on is itself available to unauthenticated callers.
+
+**What the writeup covers:** the nonce-generation action and why exposing it nullifies the upload endpoint's protection, the multipart upload request and its parameters, the plugin's files directory as an executable path, and the patch that restricts nonce generation to capable users.
 
 ---
 
@@ -42,12 +118,12 @@ Each directory is fully self-contained. Reproduction steps for one writeup do no
 
     wordpress-security-research/
     ├── CVE-2020-25213-wp-file-manager/
-    │   ├── README.md              # Summary, exploitation, impact, mitigation
-    │   ├── ANALYSIS.md            # Root cause, vulnerable code path, patch diff
-    │   ├── METHODOLOGY.md         # How the reproduction was performed
-    │   ├── requirements.txt       # Pinned Python dependencies
+    │   ├── README.md
+    │   ├── ANALYSIS.md
+    │   ├── METHODOLOGY.md
+    │   ├── requirements.txt
     │   ├── src/
-    │   │   ├── exploit.py         # Reproduction script
+    │   │   ├── exploit.py
     │   │   └── lib/
     │   │       ├── __init__.py
     │   │       ├── http_client.py
@@ -80,13 +156,13 @@ Each directory is fully self-contained. Reproduction steps for one writeup do no
     │   │       ├── http_client.py
     │   │       └── logger.py
     │   └── evidence/
-    ├── .github/workflows/lint.yml # CI: ruff + black on push
+    ├── .github/workflows/lint.yml
     ├── CONTRIBUTING.md
     ├── SECURITY.md
     ├── LICENSE
     └── README.md
 
-Each CVE's `README.md` is the primary writeup. The root README you are reading now is a navigational and methodological overview — it does not duplicate the technical content of the individual writeups.
+Each CVE's own `README.md` is the primary writeup for that finding. The sections above are summaries — the full technical detail, patch diffs, and reproduction steps live in the individual writeups.
 
 ---
 
@@ -96,27 +172,27 @@ The structure of each writeup is fixed. This is not a stylistic choice — it fo
 
 ### 1. Scope
 
-Affected versions, fixed version, CVSS vector, CWE classification, and the public disclosure timeline. Anyone reading the writeup knows immediately what the boundaries of the research are.
+Affected versions, fixed version, CVSS vector, CWE classification, and the public disclosure timeline.
 
 ### 2. Root Cause
 
-The vulnerable code, cited by file and function. This section answers: *what specific line runs, with what input, and why is that a problem?* It is not enough to say "the plugin allows file upload" — the writeup names the handler, traces the request through it, and identifies the check that should have been there and was not.
+The vulnerable code, cited by file and function. This section answers: *what specific line runs, with what input, and why is that a problem?* The writeup names the handler, traces the request through it, and identifies the check that should have been there and was not.
 
 ### 3. Patch Analysis
 
-The vendor's fix, extracted by diffing the vulnerable and patched versions. This section answers: *what did the vendor change, and what does that reveal about how they understood the bug?* A patch that adds input validation and a patch that removes the endpoint entirely are different statements about the severity of the issue, and the writeup distinguishes between them.
+The vendor's fix, extracted by diffing the vulnerable and patched versions. A patch that adds input validation and a patch that removes the endpoint entirely are different statements about the severity of the issue, and the writeup distinguishes between them.
 
 ### 4. Reproduction
 
-The exact steps to trigger the finding. Every command is provided. Expected output is captured. If the reproduction depends on a non-obvious detail — a specific header, a particular parameter name, a required ordering — that detail is called out.
+The exact steps to trigger the finding. Every command is provided. Expected output is captured. Non-obvious details — a specific header, a particular parameter name, a required ordering — are called out.
 
 ### 5. Impact
 
-What an attacker actually gains in a realistic deployment. This section deliberately avoids the theoretical maximum and describes the practical case: default configuration, common hosting environment, the attacker's actual position on the network. A CVSS 9.8 that requires local access and a non-default configuration is not the same as one that works against shared hosting from the public internet.
+What an attacker actually gains in a realistic deployment: default configuration, common hosting environment, the attacker's actual network position.
 
 ### 6. Mitigation
 
-The vendor fix, plus compensating controls for environments where patching is not immediate, plus detection opportunities for environments where the fix may never be applied. A writeup that ends at "update the plugin" is only useful to people who can update the plugin.
+The vendor fix, plus compensating controls for environments where patching is not immediate, plus detection opportunities for environments where the fix may never be applied.
 
 ---
 
@@ -132,7 +208,7 @@ Every technical claim in this repository is backed by one of the following. This
 | Execution confirmation | Terminal transcript with the unique marker in the response |
 | Impact | Cited advisory or documented deployment context |
 
-If a claim cannot be backed by one of those, it does not appear in the writeup. Speculation is not included, and no statement is made about a system that was not tested.
+If a claim cannot be backed by one of those, it does not appear in the writeup.
 
 ---
 
@@ -144,8 +220,6 @@ If a claim cannot be backed by one of those, it does not appear in the writeup. 
 |-------------|---------|-------|
 | Python | 3.9+ | Required to run the reproducers |
 | Git | any recent | Only needed if cloning rather than downloading |
-
-Each writeup's reproduction section documents any additional requirements specific to that CVE. Most reproducers have no dependencies beyond the standard library and `requests`.
 
 ### Clone the Repository
 
@@ -164,7 +238,7 @@ Each CVE directory has its own isolated Python environment:
     pip install -r requirements.txt
     python3 src/exploit.py --help
 
-Dependencies are pinned to specific versions. Updates to dependencies are made deliberately and tested before being merged, not pulled automatically.
+Dependencies are pinned to specific versions. Updates are made deliberately and tested before being merged.
 
 ### Running Tests
 
@@ -172,31 +246,31 @@ Dependencies are pinned to specific versions. Updates to dependencies are made d
     pip install pytest
     pytest tests/
 
-Unit tests cover the reproducer's helper logic — argument parsing, version comparison, session configuration. Integration testing is performed manually and captured in the `evidence/` directory of each CVE.
+Unit tests cover helper logic — argument parsing, version comparison, session configuration. Integration testing is performed manually and captured in the `evidence/` directory of each CVE.
 
 ---
 
 ## Reading Order
 
-If you are new to the repository, read the entries in the order they appear in the [Contents](#contents) table.
+Read the entries in the order they appear in the [Contents](#contents) table.
 
-If you are looking for a specific vulnerability class:
+By vulnerability class:
 
-- **Unauthenticated file upload → RCE:** all three entries
-- **Third-party library integration flaws:** CVE-2020-25213
-- **Missing authorization on state-changing endpoints:** CVE-2026-82970 and CVE-2026-3891
+- **Directly exposed upload handler:** CVE-2020-25213
+- **Missing authorization on the upload endpoint itself:** CVE-2026-82970
+- **Missing authorization on an endpoint that gates the upload endpoint:** CVE-2026-3891
 
-If you are looking for a specific plugin:
+By plugin:
 
 - **WP File Manager:** CVE-2020-25213
-- **WP Cookie Consent (gdpr-cookie-consent):** CVE-2026-82970
-- **Pix for WooCommerce:** CVE-2026-3891
+- **WP Cookie Consent (`gdpr-cookie-consent`):** CVE-2026-82970
+- **Pix for WooCommerce (`payment-gateway-pix-for-woocommerce`):** CVE-2026-3891
 
 ---
 
 ## Scope
 
-This repository covers WordPress plugin vulnerabilities only. The scope is deliberate: a focused repository with well-documented entries is more useful than a broad one with shallow entries. The analysis methodology is transferable to other plugin families and to other web application stacks, but the entries here stay within WordPress.
+This repository covers WordPress plugin vulnerabilities only. The scope is deliberate: a focused repository with well-documented entries is more useful than a broad one with shallow entries. The analysis methodology is transferable to other plugin families and other web application stacks, but the entries here stay within WordPress.
 
 Related work outside this repository's scope is available in a separate repository. See the profile for links.
 
@@ -213,7 +287,7 @@ Related work outside this repository's scope is available in a separate reposito
 - Do not open issues, pull requests, or discussions describing how to adapt the code to attack live targets.
 - Do not redistribute the code with the intent of enabling its use against systems without authorization.
 
-The reproducer code is intentionally minimal and non-destructive. The payloads used in the reproductions echo a marker string — they do not open shells, exfiltrate data, or perform any other weaponized behavior. This is a deliberate design choice: the point is to demonstrate the finding, not to produce a usable offensive tool.
+The reproducer code is intentionally minimal and non-destructive. The payloads echo a marker string — they do not open shells, exfiltrate data, or perform any other weaponized behavior. This is a deliberate design choice.
 
 ---
 
@@ -221,11 +295,4 @@ The reproducer code is intentionally minimal and non-destructive. The payloads u
 
 Every CVE covered in this repository was disclosed publicly before this repository was published. No original vulnerability disclosure is claimed here.
 
-The disclosure timeline for each CVE is documented in that CVE's `README.md` and includes:
-
-- The original disclosure date
-- The vendor fix release date
-- The date the local reproduction was performed
-- The date the writeup was published
-
-If you believe any writeup in this repository covers a vulnerability that has not been publicly disclosed, contact the maintainer before publishing anything.
+The disclosure timeline for each CVE is documented in that CVE's own `README.md` and includes the original disclosure date, the vendor fix release date, the date the reproduction was performed, and the date the writeup was published.
