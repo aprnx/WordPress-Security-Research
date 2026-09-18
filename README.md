@@ -5,8 +5,6 @@
 ![Status](https://img.shields.io/badge/status-active-brightgreen)
 ![Writeups](https://img.shields.io/badge/writeups-3-blueviolet)
 
-Reproducible vulnerability research on WordPress plugins. Every entry in this repository is a complete research artifact: source-level root cause analysis, vendor patch diffing, captured reproduction evidence, and a realistic impact assessment. The goal is methodology that a reader can audit and repeat, not a payload collection.
-
 ---
 
 ## Table of Contents
