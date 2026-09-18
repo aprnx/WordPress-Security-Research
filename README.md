@@ -11,6 +11,7 @@ Reproducible vulnerability research on WordPress plugins. Every entry in this re
 
 ## Table of Contents
 
+- [Contents](#contents)
 - [Repository Structure](#repository-structure)
 - [Research Methodology](#research-methodology)
 - [Evidence Standard](#evidence-standard)
@@ -25,23 +26,60 @@ Reproducible vulnerability research on WordPress plugins. Every entry in this re
 
 ---
 
+## Contents
+
+| CVE | Component | Class | CVSS | CWE | Status |
+|-----|-----------|-------|------|-----|--------|
+| [CVE-2020-25213](CVE-2020-25213-wp-file-manager/) | WP File Manager < 6.9 | Unauthenticated file upload → RCE | 9.8 Critical | CWE-434 | Complete |
+| [CVE-2026-82970](CVE-2026-82970-wp-cookie-notice/) | WP Cookie Consent ≤ 4.4.1 | Unauthenticated arbitrary file upload | 9.8 Critical | CWE-434 | Complete |
+| [CVE-2026-3891](CVE-2026-3891-pix-for-woocommerce/) | Pix for WooCommerce | Unauthenticated file upload via nonce leak | TBD | CWE-434 | In progress |
+
+Each directory is fully self-contained. Reproduction steps for one writeup do not depend on another.
+
+---
+
 ## Repository Structure
 
-Every CVE directory follows the same layout. The consistency is deliberate — once a reader has navigated one writeup, every other writeup is immediately familiar.
-
     wordpress-security-research/
-    ├── CVE-<year>-<id>-<component>/
+    ├── CVE-2020-25213-wp-file-manager/
     │   ├── README.md              # Summary, exploitation, impact, mitigation
     │   ├── ANALYSIS.md            # Root cause, vulnerable code path, patch diff
     │   ├── METHODOLOGY.md         # How the reproduction was performed
     │   ├── requirements.txt       # Pinned Python dependencies
     │   ├── src/
     │   │   ├── exploit.py         # Reproduction script
-    │   │   └── lib/               # Support modules (HTTP client, logger)
+    │   │   └── lib/
+    │   │       ├── __init__.py
+    │   │       ├── http_client.py
+    │   │       └── logger.py
     │   ├── tests/
-    │   │   └── test_exploit.py    # Unit tests for reproducer logic
+    │   │   └── test_exploit.py
     │   └── evidence/
-    │       └── exploitation.log   # Terminal transcript
+    │       └── exploitation.log
+    ├── CVE-2026-82970-wp-cookie-notice/
+    │   ├── README.md
+    │   ├── ANALYSIS.md
+    │   ├── METHODOLOGY.md
+    │   ├── requirements.txt
+    │   ├── src/
+    │   │   ├── exploit.py
+    │   │   └── lib/
+    │   │       ├── __init__.py
+    │   │       ├── http_client.py
+    │   │       └── logger.py
+    │   └── evidence/
+    ├── CVE-2026-3891-pix-for-woocommerce/
+    │   ├── README.md
+    │   ├── ANALYSIS.md
+    │   ├── METHODOLOGY.md
+    │   ├── requirements.txt
+    │   ├── src/
+    │   │   ├── exploit.py
+    │   │   └── lib/
+    │   │       ├── __init__.py
+    │   │       ├── http_client.py
+    │   │       └── logger.py
+    │   └── evidence/
     ├── .github/workflows/lint.yml # CI: ruff + black on push
     ├── CONTRIBUTING.md
     ├── SECURITY.md
@@ -191,15 +229,3 @@ The disclosure timeline for each CVE is documented in that CVE's `README.md` and
 - The date the writeup was published
 
 If you believe any writeup in this repository covers a vulnerability that has not been publicly disclosed, contact the maintainer before publishing anything.
-
----
-
-## Contributing
-
-Corrections, additional detection signatures, and portability fixes are welcome. Full guidance is in [CONTRIBUTING.md](CONTRIBUTING.md).
-
-The short version:
-
-- Open an issue first for anything beyond typo fixes
-- Corrections to technical claims require a source or a reproduction
-- New CVE writeups are not accepted — every entry in this repository is original work by the maintainer
